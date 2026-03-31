@@ -6,13 +6,16 @@ Main Window for Instagram Automation Tool
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QMessageBox, QFileDialog,
-    QTextEdit, QTabWidget, QGroupBox, QFormLayout
+    QTextEdit, QTabWidget, QGroupBox, QFormLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
 from gui.login_dialog import LoginDialog
+from gui.schedule_dialog import SchedulePostDialog
 from core.instagram_client import get_instagram_client
+from core.scheduler import get_scheduler
 from utils.logger import get_logger
 from utils.config import get_config
 
@@ -25,7 +28,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = get_config()
         self.instagram_client = get_instagram_client()
+        self.scheduler = get_scheduler()
+        
+        # Start scheduler
+        self.scheduler.start()
+        
         self.init_ui()
+        
+        # Auto-refresh scheduled posts
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.refresh_scheduled_posts)
+        self.refresh_timer.start(30000)  # Refresh every 30 seconds
         
         # Show login dialog on startup
         self.show_login()
@@ -79,7 +92,11 @@ class MainWindow(QMainWindow):
         post_tab = self.create_post_tab()
         self.tabs.addTab(post_tab, "📤 Quick Post")
         
-        # Tab 2: Info
+        # Tab 2: Scheduled Posts
+        schedule_tab = self.create_schedule_tab()
+        self.tabs.addTab(schedule_tab, "📅 Scheduled Posts")
+        
+        # Tab 3: Info
         info_tab = self.create_info_tab()
         self.tabs.addTab(info_tab, "ℹ️ Info")
         
@@ -112,6 +129,25 @@ class MainWindow(QMainWindow):
         type_layout.addWidget(self.story_btn)
         
         layout.addWidget(type_group)
+        
+        # Schedule Button
+        schedule_btn = QPushButton("📅 Schedule Post for Later")
+        schedule_btn.setMinimumHeight(50)
+        schedule_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8e44ad;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #6c3483;
+            }
+        """)
+        schedule_btn.clicked.connect(self.show_schedule_dialog)
+        layout.addWidget(schedule_btn)
         
         # Caption
         caption_group = QGroupBox("Caption (for Photo/Video posts)")
@@ -155,6 +191,8 @@ class MainWindow(QMainWindow):
             "<li>✅ Post videos and reels</li>"
             "<li>✅ Post stories (photo and video)</li>"
             "<li>✅ Add captions and hashtags</li>"
+            "<li>✅ Schedule posts for later (NEW!)</li>"
+            "<li>✅ Recurring schedules - daily/weekly/monthly (NEW!)</li>"
             "</ul>"
             "<p><b>What you need:</b></p>"
             "<ul>"
@@ -163,12 +201,11 @@ class MainWindow(QMainWindow):
             "<li>✅ NO monthly fees</li>"
             "<li>✅ Completely FREE!</li>"
             "</ul>"
-            "<p><b>Future features (coming soon):</b></p>"
+            "<p><b>Coming soon:</b></p>"
             "<ul>"
-            "<li>📅 Schedule posts for later</li>"
-            "<li>🔄 Recurring schedules (daily/weekly/monthly)</li>"
             "<li>📊 Post history and analytics</li>"
             "<li>🖼️ Image editing tools</li>"
+            "<li>📱 Multiple account support</li>"
             "</ul>"
             "<p><b>Security:</b></p>"
             "<ul>"
@@ -293,3 +330,132 @@ class MainWindow(QMainWindow):
                 "Failed",
                 f"❌ {result.get('message') if result else 'Unknown error'}"
             )
+    
+    def create_schedule_tab(self):
+        """Create scheduled posts tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Header
+        header_layout = QHBoxLayout()
+        
+        title = QLabel("Scheduled Posts")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        header_layout.addWidget(title)
+        
+        header_layout.addStretch()
+        
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.clicked.connect(self.refresh_scheduled_posts)
+        header_layout.addWidget(refresh_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # Table
+        self.schedule_table = QTableWidget()
+        self.schedule_table.setColumnCount(5)
+        self.schedule_table.setHorizontalHeaderLabels([
+            "ID", "Type", "Caption", "Scheduled Time", "Status"
+        ])
+        self.schedule_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.schedule_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.schedule_table.setSelectionBehavior(QTableWidget.SelectRows)
+        
+        layout.addWidget(self.schedule_table)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        cancel_btn = QPushButton("❌ Cancel Selected")
+        cancel_btn.clicked.connect(self.cancel_selected_post)
+        button_layout.addWidget(cancel_btn)
+        
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        
+        # Info
+        info = QLabel(
+            "💡 Tip: Posts will be automatically published at their scheduled times.\n"
+            "Keep this application running in the background for scheduled posts to work!"
+        )
+        info.setStyleSheet("background-color: #e3f2fd; padding: 10px; border-radius: 5px; color: #1976d2;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        # Load scheduled posts
+        self.refresh_scheduled_posts()
+        
+        return widget
+    
+    def show_schedule_dialog(self):
+        """Show schedule post dialog"""
+        if not self.instagram_client.is_logged_in:
+            QMessageBox.warning(
+                self,
+                "Not Logged In",
+                "Please login first to schedule posts!"
+            )
+            self.show_login()
+            return
+        
+        dialog = SchedulePostDialog(self)
+        if dialog.exec_():
+            # Refresh the scheduled posts table
+            self.refresh_scheduled_posts()
+            self.tabs.setCurrentIndex(1)  # Switch to scheduled posts tab
+    
+    def refresh_scheduled_posts(self):
+        """Refresh scheduled posts table"""
+        try:
+            posts = self.scheduler.get_scheduled_posts(100)
+            
+            self.schedule_table.setRowCount(len(posts))
+            
+            for row, post in enumerate(posts):
+                self.schedule_table.setItem(row, 0, QTableWidgetItem(str(post['id'])))
+                self.schedule_table.setItem(row, 1, QTableWidgetItem(post['type']))
+                self.schedule_table.setItem(row, 2, QTableWidgetItem(post['caption']))
+                self.schedule_table.setItem(row, 3, QTableWidgetItem(post['scheduled_time']))
+                
+                status_item = QTableWidgetItem(post['status'])
+                if post['status'] == 'scheduled':
+                    status_item.setForeground(Qt.blue)
+                self.schedule_table.setItem(row, 4, status_item)
+                
+        except Exception as e:
+            logger.error(f"Error refreshing scheduled posts: {e}")
+    
+    def cancel_selected_post(self):
+        """Cancel selected scheduled post"""
+        selected_rows = self.schedule_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            QMessageBox.warning(self, "No Selection", "Please select a post to cancel!")
+            return
+        
+        row = selected_rows[0].row()
+        post_id = int(self.schedule_table.item(row, 0).text())
+        
+        reply = QMessageBox.question(
+            self,
+            "Cancel Post",
+            "Are you sure you want to cancel this scheduled post?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            result = self.scheduler.cancel_post(post_id)
+            
+            if result.get('success'):
+                QMessageBox.information(self, "Success", "Post cancelled successfully!")
+                self.refresh_scheduled_posts()
+            else:
+                QMessageBox.critical(self, "Failed", result.get('message', 'Failed to cancel post'))
+    
+    def closeEvent(self, event):
+        """Handle window close"""
+        # Scheduler will keep running in background
+        logger.info("Application closed (scheduler still running)")
+        event.accept()
+
