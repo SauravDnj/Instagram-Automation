@@ -1,9 +1,6 @@
-# Vercel Configuration for Instagram Automation Web
-
-# Build Settings
 {
   "buildCommand": "cd web && npm install && npm run build",
   "outputDirectory": "web/.next",
-  "framework": "nextjs",
-  "installCommand": "cd web && npm install"
+  "installCommand": "cd web && npm install",
+  "framework": "nextjs"
 }
